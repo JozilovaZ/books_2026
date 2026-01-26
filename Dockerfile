@@ -1,9 +1,14 @@
 FROM python:3.11-slim
 
-WORKDIR /usr/src/app/bot
+# Ishchi katalogni /app qiling (sodda bo'lishi uchun)
+WORKDIR /app
 
-COPY requirements.txt /usr/src/app/bot
+# Kutubxonalarni o'rnatish
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install -r /usr/src/app/bot/requirements.txt
+# Hamma fayllarni ko'chirish
+COPY . .
 
-COPY . /usr/src/app/bot
+# Ishga tushirish buyrug'i
+CMD ["python", "main.py"]
