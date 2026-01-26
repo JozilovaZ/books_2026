@@ -4,10 +4,11 @@ services:
     stop_signal: SIGINT
     build:
       context: .
-    working_dir: /app  # Dockerfile dagi WORKDIR bilan bir xil bo'lishi kerak
+    working_dir: /app
     volumes:
-      - .:/app         # Fayllarni /app papkasiga ulaymiz
-    command: python main.py
+      - .:/app
+    # ASOSIY O'ZGARISH SHU YERDA:
+    command: python app.py
     restart: always
     env_file:
       - ".env"
