@@ -1123,4 +1123,3 @@ async def saved_prev(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer(body, reply_markup=kb)
     await state.update_data(saved_offset=offset)
     await cb.answer()
-
