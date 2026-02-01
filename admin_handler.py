@@ -133,8 +133,10 @@ async def upload_type(cb: CallbackQuery, state: FSMContext):
         return
     t = cb.data.split(":")[1]
     await state.update_data(type=t)
-    await cb.message.answer(blockquote("Kitob nomini kiriting"), parse_mode="HTML")
-    await state.set_state(UploadBookState.title)
+    kb = choice_keyboard([], add_back=True, add_finish=True)
+    await cb.message.answer(blockquote("Fayllarni yuboring. Yakunlash uchun tugmadan foydalaning."), parse_mode="HTML",
+                            reply_markup=kb)
+    await state.set_state(UploadBookState.receiving_parts)
     await cb.answer()
 
 
@@ -153,8 +155,9 @@ async def receive_parts(message: Message, state: FSMContext):
         file_id = message.document.file_id
         size = message.document.file_size or 0
         if db.file_exists_in_server(file_id):
-            await message.answer(blockquote("Bu fayl serverda allaqachon mavjud. Yuklash rad etildi."),
-                                 parse_mode="HTML")
+            await state.update_data(pending_part={"file_id": file_id, "size": size, "duration": 0, "parts": parts, "type": "pdf"})
+            kb = choice_keyboard([("Yuklash", "dup:yes"), ("Bekor qilish", "dup:no")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
+            await message.answer(blockquote("ℹ️ Bu fayl avval yuklangan. Qayta yuklashni xohlaysizmi?"), parse_mode="HTML", reply_markup=kb)
             return
         db.add_book_part(book_id, file_id, parts, size=size, duration_seconds=0)
         logging.getLogger("upload").info(f"part={parts} book_id={book_id} type=pdf size={size}")
@@ -163,8 +166,9 @@ async def receive_parts(message: Message, state: FSMContext):
         size = message.audio.file_size or 0
         duration = message.audio.duration or 0
         if db.file_exists_in_server(file_id):
-            await message.answer(blockquote("Bu audio fayl serverda allaqachon mavjud. Yuklash rad etildi."),
-                                 parse_mode="HTML")
+            await state.update_data(pending_part={"file_id": file_id, "size": size, "duration": duration, "parts": parts, "type": "audio"})
+            kb = choice_keyboard([("Yuklash", "dup:yes"), ("Bekor qilish", "dup:no")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
+            await message.answer(blockquote("ℹ️ Bu audio avval yuklangan. Qayta yuklashni xohlaysizmi?"), parse_mode="HTML", reply_markup=kb)
             return
         db.add_book_part(book_id, file_id, parts, size=size, duration_seconds=duration)
         logging.getLogger("upload").info(f"part={parts} book_id={book_id} type=audio size={size} dur={duration}")
@@ -179,9 +183,8 @@ async def receive_parts(message: Message, state: FSMContext):
 async def finish_upload_cb(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
         return
-    cats = db.list_categories()
-    await cb.message.answer(blockquote("Kategoriya tanlang"), parse_mode="HTML", reply_markup=categories_keyboard(cats))
-    await state.set_state(UploadBookState.choose_category)
+    await cb.message.answer(blockquote("Kitob nomini kiriting"), parse_mode="HTML")
+    await state.set_state(UploadBookState.title)
     await cb.answer()
 
 
@@ -201,9 +204,9 @@ async def upload_author(message: Message, state: FSMContext):
         return
     author = message.text.strip()
     await state.update_data(author=author)
-    await message.answer(blockquote("Fayllarni yuboring. Yakunlash uchun tugmadan foydalaning."), parse_mode="HTML",
-                         reply_markup=choice_keyboard([], add_back=True, add_finish=True))
-    await state.set_state(UploadBookState.receiving_parts)
+    cats = db.list_categories()
+    await message.answer(blockquote("Kategoriya tanlang"), parse_mode="HTML", reply_markup=categories_keyboard(cats))
+    await state.set_state(UploadBookState.choose_category)
 
 
 @admin_router.callback_query(UploadBookState.choose_category, F.data.startswith("cat:"))
@@ -278,6 +281,32 @@ async def upload_confirm(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer()
     await books_menu(cb.message)
+
+@admin_router.callback_query(UploadBookState.receiving_parts, F.data.startswith("dup:"))
+async def upload_duplicate_decide(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    data = await state.get_data()
+    book_id = data.get("book_id")
+    pend = data.get("pending_part")
+    if not pend or not book_id:
+        await cb.answer()
+        return
+    if cb.data.endswith("no"):
+        await state.update_data(pending_part=None)
+        await cb.message.answer("Qayta yuklash bekor qilindi")
+        await cb.answer()
+        return
+    parts = pend["parts"]
+    if pend["type"] == "pdf":
+        db.add_book_part(book_id, pend["file_id"], parts, size=pend["size"], duration_seconds=0)
+        logging.getLogger("upload").info(f"dup-confirm part={parts} book_id={book_id} type=pdf size={pend['size']}")
+    else:
+        db.add_book_part(book_id, pend["file_id"], parts, size=pend["size"], duration_seconds=pend["duration"])
+        logging.getLogger("upload").info(f"dup-confirm part={parts} book_id={book_id} type=audio size={pend['size']} dur={pend['duration']}")
+    await state.update_data(parts_count=parts, pending_part=None)
+    await cb.message.answer(blockquote(f"Qism {parts} qabul qilindi"), parse_mode="HTML")
+    await cb.answer()
 
 
 @admin_router.callback_query(F.data == "admin_back")
@@ -365,8 +394,11 @@ async def edit_field_cb(cb: CallbackQuery, state: FSMContext):
     await state.update_data(field=f)
     if f == "buy":
         await cb.message.answer("Yangi havola URL kiriting (o‘chirish uchun '-')")
+    elif f == "category":
+        cats = db.list_categories()
+        await cb.message.answer(blockquote("Kategoriya tanlang"), parse_mode="HTML", reply_markup=categories_keyboard(cats))
     else:
-        await cb.message.answer("Yangi qiymatni kiriting (category uchun ID)")
+        await cb.message.answer("Yangi qiymatni kiriting")
     await state.set_state(EditBookState.value)
     await cb.answer()
 
@@ -380,7 +412,11 @@ async def edit_field(message: Message, state: FSMContext):
         await message.answer("title/author/category dan birini kiriting")
         return
     await state.update_data(field=f)
-    await message.answer("Yangi qiymatni kiriting (category uchun ID)")
+    if f == "category":
+        cats = db.list_categories()
+        await message.answer(blockquote("Kategoriya tanlang"), parse_mode="HTML", reply_markup=categories_keyboard(cats))
+    else:
+        await message.answer("Yangi qiymatni kiriting")
     await state.set_state(EditBookState.value)
 
 
@@ -413,6 +449,19 @@ async def edit_value(message: Message, state: FSMContext):
     await message.answer("Yangilandi")
     await state.clear()
     await books_menu(message)
+
+@admin_router.callback_query(EditBookState.value, F.data.startswith("cat:"))
+async def edit_cat_value_cb(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    cid = int(cb.data.split(":")[1])
+    data = await state.get_data()
+    bid = data["book_id"]
+    db.update_book_meta(bid, category_id=cid)
+    await cb.message.answer("Kategoriya yangilandi")
+    await state.clear()
+    await cb.answer()
+    await books_menu(cb.message)
 
 
 @admin_router.message(F.text == "🗑 Kitobni o‘chirish")
